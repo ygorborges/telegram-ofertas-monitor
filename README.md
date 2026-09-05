@@ -6,7 +6,7 @@ Bot que fica escutando os canais do Telegram em que você está e avisa quando a
 
 - 🔑 **Onboarding interativo** na primeira execução — pergunta tudo e salva a configuração sozinho
 - 🚫 **Palavras-chave excludentes** — cancela o alerta se o texto tiver um termo indesejado, mesmo com uma keyword positiva batendo
-- ⏱️ **Varredura de até 48h** pra canais sem histórico salvo, com opção de "Limpar histórico" pra forçar uma nova passada
+- ⏱️ **Varredura de até 48h** pra canais sem histórico salvo, com opção de "Limpar histórico" pra forçar uma nova passada — sem reenviar duplicata do que já foi alertado
 - 🕒 **Data/hora original do post** em cada alerta, não só a hora em que foi detectado
 - 🛡️ **Proteção contra flood do Telegram** — espaça os envios e reage automaticamente se o limite for atingido
 - 📋 **Log persistente** e status ao vivo na bandeja do sistema (tooltip + menu com histórico)
@@ -18,7 +18,7 @@ Bot que fica escutando os canais do Telegram em que você está e avisa quando a
 2. Ao iniciar, revisita mensagens perdidas desde a última execução (controlado por `monitor_state.json`, um "até onde eu já vi" por canal) e depois passa a escutar novas mensagens em tempo real. Canal sem histórico salvo ainda (nunca visto, ou depois de "Limpar histórico") busca as últimas 48h em vez de ficar sem saber onde começar. A conversa "Mensagens Salvas" nunca é lida/escaneada — é só o destino dos alertas, nunca a origem.
 3. Cada mensagem é comparada (case-insensitive) contra a lista de `KEYWORDS`. Se bater alguma, o texto também é checado contra `EXCLUDE_KEYWORDS`: se qualquer excludente aparecer, o alerta é cancelado mesmo com uma keyword positiva batendo (ex.: quer "iphone" mas não "iphone usado").
 4. Quando bate alguma palavra-chave (e nenhuma excludente), envia um alerta formatado (canal, termo encontrado, **data/hora em que foi postado no canal**, link da mensagem, trecho do conteúdo) para o chat "Mensagens Salvas" (`me`) e dispara uma notificação desktop, se `pystray`/`plyer` estiverem instalados. Os envios são espaçados (mínimo 3s entre um e outro) pra não disparar o limite de flood do Telegram quando muitos alertas batem de uma vez (ex.: depois de "Limpar histórico"); se mesmo assim o limite for atingido, o monitor espera o tempo pedido pelo Telegram e tenta reenviar automaticamente uma vez.
-5. Roda com um ícone na bandeja do sistema (opcional). Passar o mouse por cima mostra o status (conectado desde quando, quantos alertas nesta sessão, resumo do último). O menu (clique direito) tem "Ver histórico" (abre o `monitor.log` completo), "Limpar histórico" (zera o progresso salvo e refaz a varredura das últimas 48h em todos os canais na hora) e "Sair".
+5. Roda com um ícone na bandeja do sistema (opcional). Passar o mouse por cima mostra o status (conectado desde quando, quantos alertas nesta sessão, resumo do último). O menu (clique direito) tem "Ver histórico" (abre o `monitor.log` completo), "Limpar histórico" (zera o progresso salvo e refaz a varredura das últimas 48h em todos os canais na hora — mensagens que já tinham sido alertadas antes não são reenviadas, mesmo que caiam de novo dentro da janela de 48h) e "Sair".
 6. Assim que conecta com sucesso, dispara uma notificação desktop confirmando que está ativo e ouvindo.
 
 ## Setup
@@ -54,7 +54,8 @@ Para rodar em segundo plano sem janela de console, depois que a configuração i
 
 - `.env` — só existe se você optou por essa forma de configuração; caso contrário as credenciais ficam em variável de ambiente do Windows.
 - `monitor_session.session` — sessão autenticada do Telethon.
-- `monitor_state.json` — último ID de mensagem processado por chat, para não reprocessar/perder mensagens entre execuções.
+- `monitor_state.json` — último ID de mensagem processado por chat, para não reprocessar/perder mensagens entre execuções. Zerado por "Limpar histórico".
+- `alerted_messages.json` — registro de mensagens já alertadas (últimos 14 dias), separado do arquivo acima e **não** afetado por "Limpar histórico" — é o que garante que forçar uma nova varredura não reenvie duplicata do que já está nas suas Mensagens Salvas.
 - `monitor.log` (+ `.log.1`, `.log.2`) — log com tudo que o monitor fez (conexão, alertas enviados, ignorados, erros). Como ele roda sem console (`pythonw`), esse arquivo é a única forma de ver o que aconteceu — abra pelo menu da bandeja ("Ver histórico") ou direto num editor de texto. Gira automaticamente por tamanho (não cresce pra sempre).
 
 ## Notas

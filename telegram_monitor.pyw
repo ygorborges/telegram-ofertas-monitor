@@ -181,6 +181,38 @@ def update_last_processed(chat_id, message_id):
     save_state(state)
 
 
+# Registro separado de mensagens já alertadas — sobrevive ao "Limpar histórico"
+# (que só reseta o ponteiro de varredura) pra não reenviar duplicata pras
+# Mensagens Salvas de algo que já tinha sido mandado antes.
+ALERTED_FILE = Path('alerted_messages.json')
+ALERTED_RETENTION = timedelta(days=14)
+
+
+def load_alerted():
+    if not ALERTED_FILE.exists():
+        return {}
+    try:
+        return json.loads(ALERTED_FILE.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def save_alerted(alerted):
+    ALERTED_FILE.write_text(json.dumps(alerted, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def was_already_alerted(chat_id, message_id):
+    return f"{chat_id}:{message_id}" in load_alerted()
+
+
+def mark_alerted(chat_id, message_id):
+    alerted = load_alerted()
+    cutoff = datetime.now(timezone.utc) - ALERTED_RETENTION
+    alerted = {k: v for k, v in alerted.items() if datetime.fromisoformat(v) > cutoff}
+    alerted[f"{chat_id}:{message_id}"] = datetime.now(timezone.utc).isoformat()
+    save_alerted(alerted)
+
+
 def create_tray_image():
     image = Image.new('RGB', (64, 64), color=(0, 120, 212))
     draw = ImageDraw.Draw(image)
@@ -271,7 +303,7 @@ async def send_alert(alert_msg):
 def clear_history_action(icon, item):
     try:
         save_state({})
-        log(f"🧹 Histórico limpo. Refazendo varredura das últimas {int(HISTORY_FALLBACK.total_seconds() // 3600)}h em todos os canais...")
+        log(f"🧹 Histórico limpo. Refazendo varredura das últimas {int(HISTORY_FALLBACK.total_seconds() // 3600)}h em todos os canais (sem reenviar o que já foi alertado antes)...")
         show_notification(title='Telegram Ofertas Monitor', message='Histórico limpo — reescaneando últimas 48h.')
         if loop and not loop.is_closed():
             asyncio.run_coroutine_threadsafe(resume_missing_messages(), loop)
@@ -303,6 +335,8 @@ async def process_message(chat, message):
 
     if matched_keywords and excluding_keywords:
         log(f"🚫 [IGNORADO] Termo(s) {matched_keywords} encontrado(s) em '{chat_title}', mas excluído por {excluding_keywords}.")
+    elif matched_keywords and was_already_alerted(chat.id, message.id):
+        log(f"🔁 [DUPLICADO] Termo {matched_keywords} em '{chat_title}' já tinha sido alertado antes — não reenviando.")
     elif matched_keywords:
         chat_username = getattr(chat, 'username', None)
 
@@ -332,6 +366,7 @@ async def process_message(chat, message):
                 message=f"{chat_title}: {message_text[:120]}{'...' if len(message_text) > 120 else ''}",
             )
             register_alert_sent(chat_title, matched_keywords)
+            mark_alerted(chat.id, message.id)
         except Exception as e:
             log(f"❌ Erro ao enviar mensagem de alerta (mesmo após esperar o limite): {e}")
 

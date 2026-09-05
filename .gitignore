@@ -2,6 +2,7 @@
 *.session
 *.session-journal
 monitor_state.json
+alerted_messages.json
 monitor.log*
 .venv/
 __pycache__/
