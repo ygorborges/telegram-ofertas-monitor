@@ -369,6 +369,13 @@ def edit_keywords_action(icon, item):
     tk.Button(btn_frame, text='Salvar', width=12, command=on_save).pack(side='left', padx=6)
     tk.Button(btn_frame, text='Cancelar', width=12, command=root.destroy).pack(side='left', padx=6)
 
+    # Sem isso, a janela abre sem nenhum campo focado — digitar direto não faz
+    # nada até clicar manualmente dentro de uma caixa de texto.
+    root.lift()
+    root.focus_force()
+    kw_text.focus_set()
+    kw_text.mark_set('insert', 'end')
+
     root.mainloop()
 
 
