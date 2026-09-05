@@ -300,6 +300,78 @@ async def send_alert(alert_msg):
             _last_send_at = asyncio.get_event_loop().time()
 
 
+def _persist_keyword_vars(keywords_str, exclude_str):
+    """Salva KEYWORDS/EXCLUDE_KEYWORDS do mesmo jeito que já estavam configuradas
+    (arquivo .env, se existir, ou variável de ambiente do Windows)."""
+    os.environ['KEYWORDS'] = keywords_str
+    os.environ['EXCLUDE_KEYWORDS'] = exclude_str
+
+    env_path = Path('.env')
+    if env_path.exists():
+        lines = env_path.read_text(encoding='utf-8').splitlines()
+        found = {'KEYWORDS': False, 'EXCLUDE_KEYWORDS': False}
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('KEYWORDS='):
+                new_lines.append(f'KEYWORDS={keywords_str}')
+                found['KEYWORDS'] = True
+            elif stripped.startswith('EXCLUDE_KEYWORDS='):
+                new_lines.append(f'EXCLUDE_KEYWORDS={exclude_str}')
+                found['EXCLUDE_KEYWORDS'] = True
+            else:
+                new_lines.append(line)
+        if not found['KEYWORDS']:
+            new_lines.append(f'KEYWORDS={keywords_str}')
+        if not found['EXCLUDE_KEYWORDS']:
+            new_lines.append(f'EXCLUDE_KEYWORDS={exclude_str}')
+        env_path.write_text('\n'.join(new_lines) + '\n', encoding='utf-8')
+    else:
+        _set_windows_user_env_var('KEYWORDS', keywords_str)
+        _set_windows_user_env_var('EXCLUDE_KEYWORDS', exclude_str)
+
+
+def edit_keywords_action(icon, item):
+    import tkinter as tk
+
+    def on_save():
+        global KEYWORDS, EXCLUDE_KEYWORDS
+        new_keywords_str = ','.join(l.strip() for l in kw_text.get('1.0', 'end').splitlines() if l.strip())
+        new_exclude_str = ','.join(l.strip() for l in ex_text.get('1.0', 'end').splitlines() if l.strip())
+
+        KEYWORDS = [k.strip().lower() for k in new_keywords_str.split(',') if k.strip()]
+        EXCLUDE_KEYWORDS = [k.strip().lower() for k in new_exclude_str.split(',') if k.strip()]
+
+        try:
+            _persist_keyword_vars(new_keywords_str, new_exclude_str)
+            log(f"✏️ Palavras-chave atualizadas. Inclusivas: {', '.join(KEYWORDS) or '(nenhuma)'} | Excludentes: {', '.join(EXCLUDE_KEYWORDS) or '(nenhuma)'}")
+            show_notification(title='Telegram Ofertas Monitor', message='Palavras-chave atualizadas.')
+        except Exception as e:
+            log(f"❌ Erro ao salvar palavras-chave: {e}")
+        root.destroy()
+
+    root = tk.Tk()
+    root.title('Palavras-chave — Telegram Ofertas Monitor')
+    root.attributes('-topmost', True)
+
+    tk.Label(root, text='Inclusivas (uma por linha) — qualquer uma dispara o alerta:').pack(anchor='w', padx=10, pady=(10, 2))
+    kw_text = tk.Text(root, width=60, height=12)
+    kw_text.pack(padx=10, pady=(0, 8))
+    kw_text.insert('1.0', '\n'.join(KEYWORDS))
+
+    tk.Label(root, text='Excludentes (uma por linha) — cancelam o alerta mesmo se uma inclusiva bater:').pack(anchor='w', padx=10, pady=(0, 2))
+    ex_text = tk.Text(root, width=60, height=6)
+    ex_text.pack(padx=10, pady=(0, 8))
+    ex_text.insert('1.0', '\n'.join(EXCLUDE_KEYWORDS))
+
+    btn_frame = tk.Frame(root)
+    btn_frame.pack(pady=(0, 10))
+    tk.Button(btn_frame, text='Salvar', width=12, command=on_save).pack(side='left', padx=6)
+    tk.Button(btn_frame, text='Cancelar', width=12, command=root.destroy).pack(side='left', padx=6)
+
+    root.mainloop()
+
+
 def clear_history_action(icon, item):
     try:
         save_state({})
@@ -436,6 +508,7 @@ async def main():
             create_tray_image(),
             'Telegram Monitor - iniciando...',
             menu=(
+                MenuItem('Editar palavras-chave', edit_keywords_action),
                 MenuItem('Ver histórico', open_log_action),
                 MenuItem('Limpar histórico', clear_history_action),
                 MenuItem('Sair', quit_action),
