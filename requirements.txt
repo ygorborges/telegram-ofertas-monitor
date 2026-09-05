@@ -1,0 +1,7 @@
+telethon
+python-dotenv
+
+# Opcionais: ícone na bandeja do sistema e notificações desktop
+pystray
+Pillow
+plyer

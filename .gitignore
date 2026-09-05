@@ -1,0 +1,8 @@
+.env
+*.session
+*.session-journal
+monitor_state.json
+monitor.log*
+.venv/
+__pycache__/
+*.pyc
