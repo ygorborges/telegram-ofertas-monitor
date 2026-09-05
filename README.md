@@ -71,4 +71,4 @@ Para rodar em segundo plano sem janela de console, depois que a configuração i
 
 ## Licença
 
-MIT — veja [LICENSE](LICENSE).
+[PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) — veja [LICENSE](LICENSE). Livre pra uso não-comercial; me procure pra qualquer uso comercial.
