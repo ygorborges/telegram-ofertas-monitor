@@ -331,6 +331,37 @@ def _persist_keyword_vars(keywords_str, exclude_str):
         _set_windows_user_env_var('EXCLUDE_KEYWORDS', exclude_str)
 
 
+def _force_foreground(hwnd):
+    """Força o foco de teclado de verdade pro hwnd dado.
+
+    O tray icon roda num processo em segundo plano (sem console) — o Windows
+    tem uma proteção que impede esse tipo de processo de "roubar" o foco pra
+    uma janela nova, mesmo com `-topmost`/`focus_force` do Tk: a janela aparece
+    por cima mas o teclado continua mandando teclas pra o que estava em foco
+    antes. `AttachThreadInput` contorna isso emprestando temporariamente a
+    permissão da thread que está em foreground.
+    """
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        fg_hwnd = user32.GetForegroundWindow()
+        fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
+        cur_thread = kernel32.GetCurrentThreadId()
+        if fg_hwnd and fg_thread and fg_thread != cur_thread:
+            user32.AttachThreadInput(fg_thread, cur_thread, True)
+            try:
+                user32.SetForegroundWindow(hwnd)
+                user32.BringWindowToTop(hwnd)
+            finally:
+                user32.AttachThreadInput(fg_thread, cur_thread, False)
+        else:
+            user32.SetForegroundWindow(hwnd)
+            user32.BringWindowToTop(hwnd)
+    except Exception as e:
+        log(f"⚠️ Não foi possível forçar o foco da janela: {e}")
+
+
 def edit_keywords_action(icon, item):
     import tkinter as tk
 
@@ -369,8 +400,10 @@ def edit_keywords_action(icon, item):
     tk.Button(btn_frame, text='Salvar', width=12, command=on_save).pack(side='left', padx=6)
     tk.Button(btn_frame, text='Cancelar', width=12, command=root.destroy).pack(side='left', padx=6)
 
-    # Sem isso, a janela abre sem nenhum campo focado — digitar direto não faz
-    # nada até clicar manualmente dentro de uma caixa de texto.
+    # A janela precisa existir de verdade (mapeada na tela) antes de tentar
+    # forçar o foco nela — sem o update(), o hwnd pode ainda não estar pronto.
+    root.update()
+    _force_foreground(root.winfo_id())
     root.lift()
     root.focus_force()
     kw_text.focus_set()
