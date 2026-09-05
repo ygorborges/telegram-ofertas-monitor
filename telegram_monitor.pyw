@@ -362,8 +362,33 @@ def _force_foreground(hwnd):
         log(f"⚠️ Não foi possível forçar o foco da janela: {e}")
 
 
+_keywords_dialog = None
+
+
 def edit_keywords_action(icon, item):
     import tkinter as tk
+
+    global _keywords_dialog
+
+    # Cada clique no menu cria um tk.Tk() novo — o Tkinter não lida bem com
+    # múltiplas janelas raiz no mesmo processo (dá exatamente esse tipo de
+    # sintoma: janela parece ali mas não recebe clique/teclado nenhum). Se já
+    # tem uma aberta, só traz ela pra frente em vez de criar outra.
+    if _keywords_dialog is not None:
+        try:
+            _keywords_dialog.deiconify()
+            _keywords_dialog.update()
+            _force_foreground(_keywords_dialog.winfo_id())
+            _keywords_dialog.lift()
+            _keywords_dialog.focus_force()
+            return
+        except Exception:
+            _keywords_dialog = None  # a janela antiga não existe mais, segue e cria uma nova
+
+    def close():
+        global _keywords_dialog
+        _keywords_dialog = None
+        root.destroy()
 
     def on_save():
         global KEYWORDS, EXCLUDE_KEYWORDS
@@ -379,10 +404,12 @@ def edit_keywords_action(icon, item):
             show_notification(title='Telegram Ofertas Monitor', message='Palavras-chave atualizadas.')
         except Exception as e:
             log(f"❌ Erro ao salvar palavras-chave: {e}")
-        root.destroy()
+        close()
 
     root = tk.Tk()
+    _keywords_dialog = root
     root.title('Palavras-chave — Telegram Ofertas Monitor')
+    root.protocol('WM_DELETE_WINDOW', close)
     root.attributes('-topmost', True)
 
     tk.Label(root, text='Inclusivas (uma por linha) — qualquer uma dispara o alerta:').pack(anchor='w', padx=10, pady=(10, 2))
@@ -398,7 +425,7 @@ def edit_keywords_action(icon, item):
     btn_frame = tk.Frame(root)
     btn_frame.pack(pady=(0, 10))
     tk.Button(btn_frame, text='Salvar', width=12, command=on_save).pack(side='left', padx=6)
-    tk.Button(btn_frame, text='Cancelar', width=12, command=root.destroy).pack(side='left', padx=6)
+    tk.Button(btn_frame, text='Cancelar', width=12, command=close).pack(side='left', padx=6)
 
     # A janela precisa existir de verdade (mapeada na tela) antes de tentar
     # forçar o foco nela — sem o update(), o hwnd pode ainda não estar pronto.
