@@ -410,7 +410,10 @@ def edit_keywords_action(icon, item):
     _keywords_dialog = root
     root.title('Palavras-chave — Telegram Ofertas Monitor')
     root.protocol('WM_DELETE_WINDOW', close)
-    root.attributes('-topmost', True)
+    # NÃO usar `-topmost` aqui: no Windows isso é implementado reforçando
+    # repetidamente SWP_NOACTIVATE no z-order, o que briga com qualquer
+    # tentativa (nossa ou do próprio Windows via Alt+Tab) de realmente ativar
+    # a janela — dá exatamente o sintoma de janela visível mas "surda".
 
     tk.Label(root, text='Inclusivas (uma por linha) — qualquer uma dispara o alerta:').pack(anchor='w', padx=10, pady=(10, 2))
     kw_text = tk.Text(root, width=60, height=12)
