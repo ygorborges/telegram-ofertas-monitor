@@ -5,7 +5,7 @@ Bot que fica escutando os canais do Telegram em que você está e avisa quando a
 ## Recursos
 
 - 🔑 **Onboarding interativo** na primeira execução — pergunta tudo e salva a configuração sozinho
-- ✏️ **Editor de palavras-chave** direto na bandeja — vê e altera inclusivas/excludentes numa janela simples, sem editar arquivo nem reiniciar
+- ✏️ **Editor de palavras-chave** direto na bandeja — abre dois arquivos de texto (inclusivas/excludentes) no Bloco de Notas, aplica sozinho assim que você salva, sem reiniciar
 - 🚫 **Palavras-chave excludentes** — cancela o alerta se o texto tiver um termo indesejado, mesmo com uma keyword positiva batendo
 - ⏱️ **Varredura de até 48h** pra canais sem histórico salvo, com opção de "Limpar histórico" pra forçar uma nova passada — sem reenviar duplicata do que já foi alertado
 - 🕒 **Data/hora original do post** em cada alerta, não só a hora em que foi detectado
@@ -20,7 +20,7 @@ Bot que fica escutando os canais do Telegram em que você está e avisa quando a
 3. Cada mensagem é comparada (case-insensitive) contra a lista de `KEYWORDS`. Se bater alguma, o texto também é checado contra `EXCLUDE_KEYWORDS`: se qualquer excludente aparecer, o alerta é cancelado mesmo com uma keyword positiva batendo (ex.: quer "iphone" mas não "iphone usado").
 4. Quando bate alguma palavra-chave (e nenhuma excludente), envia um alerta formatado (canal, termo encontrado, **data/hora em que foi postado no canal**, link da mensagem, trecho do conteúdo) para o chat "Mensagens Salvas" (`me`) e dispara uma notificação desktop, se `pystray`/`plyer` estiverem instalados. Os envios são espaçados (mínimo 3s entre um e outro) pra não disparar o limite de flood do Telegram quando muitos alertas batem de uma vez (ex.: depois de "Limpar histórico"); se mesmo assim o limite for atingido, o monitor espera o tempo pedido pelo Telegram e tenta reenviar automaticamente uma vez.
 5. Roda com um ícone na bandeja do sistema (opcional). Passar o mouse por cima mostra o status (conectado desde quando, quantos alertas nesta sessão, resumo do último). O menu (clique direito) tem:
-   - **"Editar palavras-chave"** — abre uma janela com dois campos, um pra cada linha de `KEYWORDS` (inclusivas) e outro pra `EXCLUDE_KEYWORDS` (excludentes), uma palavra por linha. Salvar já aplica na hora (sem reiniciar) e grava permanentemente do mesmo jeito que a configuração já estava (`.env` ou variável de ambiente do Windows).
+   - **"Editar palavras-chave"** — abre `keywords_inclusivas.txt` e `keywords_excludentes.txt` no Bloco de Notas (uma palavra por linha, linhas com `#` são comentários). O monitor fica de olho nesses dois arquivos e recarrega sozinho em até 15s depois que você salva — sem precisar reiniciar. As mudanças também são gravadas permanentemente do mesmo jeito que a configuração já estava (`.env` ou variável de ambiente do Windows).
    - **"Ver histórico"** — abre o `monitor.log` completo.
    - **"Limpar histórico"** — zera o progresso salvo e refaz a varredura das últimas 48h em todos os canais na hora (mensagens que já tinham sido alertadas antes não são reenviadas, mesmo que caiam de novo dentro da janela de 48h).
    - **"Sair"**.
@@ -61,6 +61,7 @@ Para rodar em segundo plano sem janela de console, depois que a configuração i
 - `monitor_session.session` — sessão autenticada do Telethon.
 - `monitor_state.json` — último ID de mensagem processado por chat, para não reprocessar/perder mensagens entre execuções. Zerado por "Limpar histórico".
 - `alerted_messages.json` — registro de mensagens já alertadas (últimos 14 dias), separado do arquivo acima e **não** afetado por "Limpar histórico" — é o que garante que forçar uma nova varredura não reenvie duplicata do que já está nas suas Mensagens Salvas.
+- `keywords_inclusivas.txt` / `keywords_excludentes.txt` — criados na primeira vez que você abre "Editar palavras-chave" no menu da bandeja, com o conteúdo atual de `KEYWORDS`/`EXCLUDE_KEYWORDS`. Depois disso, esses arquivos passam a ser a fonte de verdade — edite e salve no Bloco de Notas que o monitor recarrega sozinho.
 - `monitor.log` (+ `.log.1`, `.log.2`) — log com tudo que o monitor fez (conexão, alertas enviados, ignorados, erros). Como ele roda sem console (`pythonw`), esse arquivo é a única forma de ver o que aconteceu — abra pelo menu da bandeja ("Ver histórico") ou direto num editor de texto. Gira automaticamente por tamanho (não cresce pra sempre).
 
 ## Notas

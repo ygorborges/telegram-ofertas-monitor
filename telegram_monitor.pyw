@@ -331,115 +331,80 @@ def _persist_keyword_vars(keywords_str, exclude_str):
         _set_windows_user_env_var('EXCLUDE_KEYWORDS', exclude_str)
 
 
-def _force_foreground(hwnd):
-    """Força o foco de teclado de verdade pro hwnd dado.
-
-    O tray icon roda num processo em segundo plano (sem console) — o Windows
-    tem uma proteção que impede esse tipo de processo de "roubar" o foco pra
-    uma janela nova, mesmo com `-topmost`/`focus_force` do Tk: a janela aparece
-    por cima mas o teclado continua mandando teclas pra o que estava em foco
-    antes. `AttachThreadInput` contorna isso emprestando temporariamente a
-    permissão da thread que está em foreground.
-    """
-    try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        fg_hwnd = user32.GetForegroundWindow()
-        fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
-        cur_thread = kernel32.GetCurrentThreadId()
-        if fg_hwnd and fg_thread and fg_thread != cur_thread:
-            user32.AttachThreadInput(fg_thread, cur_thread, True)
-            try:
-                user32.SetForegroundWindow(hwnd)
-                user32.BringWindowToTop(hwnd)
-            finally:
-                user32.AttachThreadInput(fg_thread, cur_thread, False)
-        else:
-            user32.SetForegroundWindow(hwnd)
-            user32.BringWindowToTop(hwnd)
-    except Exception as e:
-        log(f"⚠️ Não foi possível forçar o foco da janela: {e}")
+KEYWORDS_INCLUSIVE_FILE = Path('keywords_inclusivas.txt')
+KEYWORDS_EXCLUDE_FILE = Path('keywords_excludentes.txt')
+KEYWORD_FILE_CHECK_INTERVAL = 15  # segundos entre checagens de mudança nos arquivos
 
 
-_keywords_dialog = None
+def _read_keyword_file(path):
+    if not path.exists():
+        return []
+    return [
+        line.strip() for line in path.read_text(encoding='utf-8').splitlines()
+        if line.strip() and not line.strip().startswith('#')
+    ]
+
+
+def _write_keyword_file(path, header, words):
+    path.write_text(header.rstrip('\n') + '\n\n' + '\n'.join(words) + '\n', encoding='utf-8')
+
+
+def _ensure_keyword_files():
+    if not KEYWORDS_INCLUSIVE_FILE.exists():
+        _write_keyword_file(
+            KEYWORDS_INCLUSIVE_FILE,
+            '# Palavras-chave INCLUSIVAS — uma por linha, qualquer uma dispara o alerta.\n'
+            '# Linhas começando com # são comentários e não contam como palavra-chave.',
+            KEYWORDS,
+        )
+    if not KEYWORDS_EXCLUDE_FILE.exists():
+        _write_keyword_file(
+            KEYWORDS_EXCLUDE_FILE,
+            '# Palavras-chave EXCLUDENTES — uma por linha, cancelam o alerta mesmo se\n'
+            '# uma inclusiva tiver batido. Linhas começando com # são ignoradas.',
+            EXCLUDE_KEYWORDS,
+        )
 
 
 def edit_keywords_action(icon, item):
-    import tkinter as tk
+    try:
+        _ensure_keyword_files()
+        os.startfile(str(KEYWORDS_INCLUSIVE_FILE.resolve()))
+        os.startfile(str(KEYWORDS_EXCLUDE_FILE.resolve()))
+        log("📝 Arquivos de palavras-chave abertos pra edição. Salve e as mudanças são aplicadas automaticamente em até 15s.")
+    except Exception as e:
+        log(f"❌ Erro ao abrir arquivos de palavras-chave: {e}")
 
-    global _keywords_dialog
 
-    # Cada clique no menu cria um tk.Tk() novo — o Tkinter não lida bem com
-    # múltiplas janelas raiz no mesmo processo (dá exatamente esse tipo de
-    # sintoma: janela parece ali mas não recebe clique/teclado nenhum). Se já
-    # tem uma aberta, só traz ela pra frente em vez de criar outra.
-    if _keywords_dialog is not None:
-        try:
-            _keywords_dialog.deiconify()
-            _keywords_dialog.update()
-            _force_foreground(_keywords_dialog.winfo_id())
-            _keywords_dialog.lift()
-            _keywords_dialog.focus_force()
-            return
-        except Exception:
-            _keywords_dialog = None  # a janela antiga não existe mais, segue e cria uma nova
+def _reload_keywords_from_files():
+    global KEYWORDS, EXCLUDE_KEYWORDS
+    KEYWORDS = [k.lower() for k in _read_keyword_file(KEYWORDS_INCLUSIVE_FILE)]
+    EXCLUDE_KEYWORDS = [k.lower() for k in _read_keyword_file(KEYWORDS_EXCLUDE_FILE)]
+    try:
+        _persist_keyword_vars(','.join(KEYWORDS), ','.join(EXCLUDE_KEYWORDS))
+    except Exception as e:
+        log(f"⚠️ Palavras-chave recarregadas na memória, mas não consegui persistir: {e}")
+    log(f"🔄 Palavras-chave recarregadas do arquivo. Inclusivas: {', '.join(KEYWORDS) or '(nenhuma)'} | Excludentes: {', '.join(EXCLUDE_KEYWORDS) or '(nenhuma)'}")
+    show_notification(title='Telegram Ofertas Monitor', message='Palavras-chave recarregadas do arquivo.')
 
-    def close():
-        global _keywords_dialog
-        _keywords_dialog = None
-        root.destroy()
 
-    def on_save():
-        global KEYWORDS, EXCLUDE_KEYWORDS
-        new_keywords_str = ','.join(l.strip() for l in kw_text.get('1.0', 'end').splitlines() if l.strip())
-        new_exclude_str = ','.join(l.strip() for l in ex_text.get('1.0', 'end').splitlines() if l.strip())
-
-        KEYWORDS = [k.strip().lower() for k in new_keywords_str.split(',') if k.strip()]
-        EXCLUDE_KEYWORDS = [k.strip().lower() for k in new_exclude_str.split(',') if k.strip()]
-
-        try:
-            _persist_keyword_vars(new_keywords_str, new_exclude_str)
-            log(f"✏️ Palavras-chave atualizadas. Inclusivas: {', '.join(KEYWORDS) or '(nenhuma)'} | Excludentes: {', '.join(EXCLUDE_KEYWORDS) or '(nenhuma)'}")
-            show_notification(title='Telegram Ofertas Monitor', message='Palavras-chave atualizadas.')
-        except Exception as e:
-            log(f"❌ Erro ao salvar palavras-chave: {e}")
-        close()
-
-    root = tk.Tk()
-    _keywords_dialog = root
-    root.title('Palavras-chave — Telegram Ofertas Monitor')
-    root.protocol('WM_DELETE_WINDOW', close)
-    # NÃO usar `-topmost` aqui: no Windows isso é implementado reforçando
-    # repetidamente SWP_NOACTIVATE no z-order, o que briga com qualquer
-    # tentativa (nossa ou do próprio Windows via Alt+Tab) de realmente ativar
-    # a janela — dá exatamente o sintoma de janela visível mas "surda".
-
-    tk.Label(root, text='Inclusivas (uma por linha) — qualquer uma dispara o alerta:').pack(anchor='w', padx=10, pady=(10, 2))
-    kw_text = tk.Text(root, width=60, height=12)
-    kw_text.pack(padx=10, pady=(0, 8))
-    kw_text.insert('1.0', '\n'.join(KEYWORDS))
-
-    tk.Label(root, text='Excludentes (uma por linha) — cancelam o alerta mesmo se uma inclusiva bater:').pack(anchor='w', padx=10, pady=(0, 2))
-    ex_text = tk.Text(root, width=60, height=6)
-    ex_text.pack(padx=10, pady=(0, 8))
-    ex_text.insert('1.0', '\n'.join(EXCLUDE_KEYWORDS))
-
-    btn_frame = tk.Frame(root)
-    btn_frame.pack(pady=(0, 10))
-    tk.Button(btn_frame, text='Salvar', width=12, command=on_save).pack(side='left', padx=6)
-    tk.Button(btn_frame, text='Cancelar', width=12, command=close).pack(side='left', padx=6)
-
-    # A janela precisa existir de verdade (mapeada na tela) antes de tentar
-    # forçar o foco nela — sem o update(), o hwnd pode ainda não estar pronto.
-    root.update()
-    _force_foreground(root.winfo_id())
-    root.lift()
-    root.focus_force()
-    kw_text.focus_set()
-    kw_text.mark_set('insert', 'end')
-
-    root.mainloop()
+async def watch_keyword_files():
+    """Detecta edições nos arquivos de palavras-chave (feitas no Bloco de Notas
+    pelo menu 'Editar palavras-chave') e recarrega sem precisar reiniciar."""
+    last_mtimes = {}
+    while True:
+        await asyncio.sleep(KEYWORD_FILE_CHECK_INTERVAL)
+        changed = False
+        for path in (KEYWORDS_INCLUSIVE_FILE, KEYWORDS_EXCLUDE_FILE):
+            try:
+                mtime = path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if last_mtimes.get(path) is not None and mtime != last_mtimes[path]:
+                changed = True
+            last_mtimes[path] = mtime
+        if changed:
+            _reload_keywords_from_files()
 
 
 def clear_history_action(icon, item):
@@ -571,6 +536,7 @@ async def main():
     # Inicia a sessão e pede autenticação no console (apenas na primeira execução)
     global loop, tray_icon, ME_ID, SESSION_START
     loop = asyncio.get_running_loop()
+    asyncio.create_task(watch_keyword_files())
 
     if TRAY_AVAILABLE:
         tray_icon = Icon(

@@ -3,6 +3,8 @@
 *.session-journal
 monitor_state.json
 alerted_messages.json
+keywords_inclusivas.txt
+keywords_excludentes.txt
 monitor.log*
 .venv/
 __pycache__/
