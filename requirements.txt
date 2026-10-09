@@ -5,3 +5,11 @@ python-dotenv
 pystray
 Pillow
 plyer
+
+# Opcional: OCR nativo do Windows pra ler o preço que vem só na imagem do post
+winrt-Windows.Media.Ocr
+winrt-Windows.Graphics.Imaging
+winrt-Windows.Storage.Streams
+winrt-Windows.Foundation
+winrt-Windows.Foundation.Collections
+winrt-Windows.Globalization

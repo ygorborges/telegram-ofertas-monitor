@@ -1,8 +1,10 @@
 import asyncio
+import io
 import json
 import logging
 import logging.handlers
 import os
+import re
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
@@ -27,6 +29,18 @@ try:
     TRAY_AVAILABLE = True
 except Exception:
     TRAY_AVAILABLE = False
+
+# OCR nativo do Windows (Windows.Media.Ocr) pra ler o preço que os canais só
+# colocam dentro da imagem. Opcional: sem ele o alerta sai sem a linha de preço.
+try:
+    from PIL import Image as _OcrImage, ImageOps as _OcrImageOps
+    from winrt.windows.media.ocr import OcrEngine
+    from winrt.windows.globalization import Language
+    from winrt.windows.graphics.imaging import SoftwareBitmap, BitmapPixelFormat
+    from winrt.windows.storage.streams import DataWriter
+    OCR_AVAILABLE = True
+except Exception:
+    OCR_AVAILABLE = False
 
 # Log persistente: sem console (pythonw), é a única forma de saber o que aconteceu.
 LOG_FILE = Path('monitor.log')
@@ -279,14 +293,38 @@ _send_lock = asyncio.Lock()
 _last_send_at = 0.0
 
 
-async def send_alert(alert_msg):
+async def _deliver(alert_msg, photo, photo_bytes):
+    # Com foto, o alerta vira a legenda da própria imagem do post: o Telegram
+    # deixou de mostrar a imagem no preview do link, e é nela que está o preço.
+    if photo is not None:
+        try:
+            await client.send_file('me', photo, caption=alert_msg)
+            return
+        except FloodWaitError:
+            raise
+        except Exception as e:
+            log(f"⚠️ Não foi possível reaproveitar a foto do post ({e}); reenviando a partir do arquivo baixado.")
+        if photo_bytes:
+            try:
+                f = io.BytesIO(photo_bytes)
+                f.name = 'oferta.jpg'
+                await client.send_file('me', f, caption=alert_msg)
+                return
+            except FloodWaitError:
+                raise
+            except Exception as e:
+                log(f"⚠️ Falha ao enviar a foto ({e}); enviando só o texto.")
+    await client.send_message('me', alert_msg)
+
+
+async def send_alert(alert_msg, photo=None, photo_bytes=None):
     global _last_send_at
     async with _send_lock:
         wait = MIN_SEND_INTERVAL - (asyncio.get_event_loop().time() - _last_send_at)
         if wait > 0:
             await asyncio.sleep(wait)
         try:
-            await client.send_message('me', alert_msg)
+            await _deliver(alert_msg, photo, photo_bytes)
         except FloodWaitError as e:
             wait_time = e.seconds + 5
             log(f"⏳ Limite de envio do Telegram atingido — aguardando {wait_time}s antes de tentar de novo.")
@@ -295,9 +333,50 @@ async def send_alert(alert_msg):
                 message=f"Limite de envio do Telegram atingido, pausando {wait_time}s.",
             )
             await asyncio.sleep(wait_time)
-            await client.send_message('me', alert_msg)
+            await _deliver(alert_msg, photo, photo_bytes)
         finally:
             _last_send_at = asyncio.get_event_loop().time()
+
+
+# Legenda de foto no Telegram tem limite de 1024 caracteres (contas sem Premium).
+CAPTION_LIMIT = 1024
+PRICE_RE = re.compile(r'\d{1,3}(?:\.\d{3})*,\d{2}')
+
+
+async def _ocr_lines(img):
+    img = img.convert('RGBA')
+    writer = DataWriter()
+    writer.write_bytes(img.tobytes('raw', 'BGRA'))
+    bitmap = SoftwareBitmap.create_copy_from_buffer(
+        writer.detach_buffer(), BitmapPixelFormat.BGRA8, img.width, img.height
+    )
+    engine = OcrEngine.try_create_from_language(Language('pt-PT')) or OcrEngine.try_create_from_user_profile_languages()
+    result = await engine.recognize_async(bitmap)
+    return [(line.text, max(w.bounding_rect.height for w in line.words)) for line in result.lines]
+
+
+async def extract_price(photo_bytes):
+    """Lê o preço atual da arte do post (selo laranja no canto inferior direito,
+    padrão do Descontos Dibbs). Devolve '37,60€' ou None."""
+    if not OCR_AVAILABLE or not photo_bytes:
+        return None
+    try:
+        img = _OcrImage.open(io.BytesIO(photo_bytes)).convert('RGB')
+        w, h = img.size
+        # O OCR não acha o texto grande na imagem inteira; recortado no selo ele lê certo.
+        crop = _OcrImageOps.grayscale(img.crop((w // 2, int(h * 0.72), w, h)))
+        for scale in (1.0, 0.5):
+            img_try = crop if scale == 1.0 else crop.resize((crop.width // 2, crop.height // 2))
+            candidates = []
+            for text, height in await _ocr_lines(img_try):
+                for m in PRICE_RE.finditer(text.replace(' ', '')):
+                    candidates.append((height, m.group(0)))
+            if candidates:
+                # O preço atual é o maior texto; o preço antigo (riscado) é menor.
+                return max(candidates)[1] + '€'
+    except Exception as e:
+        log(f"⚠️ OCR do preço falhou: {e}")
+    return None
 
 
 def _persist_keyword_vars(keywords_str, exclude_str):
@@ -455,18 +534,32 @@ async def process_message(chat, message):
 
         posted_at = message.date.astimezone().strftime('%d/%m/%Y %H:%M')
 
-        alert_msg = (
+        photo = getattr(message, 'photo', None)
+        photo_bytes = None
+        price = None
+        if photo is not None:
+            try:
+                photo_bytes = await client.download_media(message, file=bytes)
+            except Exception as e:
+                log(f"⚠️ Não foi possível baixar a imagem do post: {e}")
+            price = await extract_price(photo_bytes)
+
+        header = (
             f"🔔 **Alerta de Oferta Encontrada!**\n\n"
             f"📌 **Termo(s) detectado(s):** {', '.join(matched_keywords)}\n"
-            f"📢 **Canal:** {chat_title}\n"
+            + (f"💶 **Preço:** {price}\n" if price else "")
+            + f"📢 **Canal:** {chat_title}\n"
             f"🕒 **Postado em:** {posted_at}\n"
             f"🔗 **Link da Mensagem:** {msg_link}\n\n"
-            f"📝 **Conteúdo:**\n{message_text[:600]}"
-            f"{'...' if len(message_text) > 600 else ''}"
+            f"📝 **Conteúdo:**\n"
         )
+        content_limit = 600
+        if photo is not None:
+            content_limit = min(content_limit, CAPTION_LIMIT - len(header) - 3)
+        alert_msg = header + message_text[:content_limit] + ('...' if len(message_text) > content_limit else '')
 
         try:
-            await send_alert(alert_msg)
+            await send_alert(alert_msg, photo=photo, photo_bytes=photo_bytes)
             log(f"🔥 [MATCH] Termo {matched_keywords} encontrado em '{chat_title}' (postado em {posted_at}). Alerta enviado para suas Mensagens Salvas!")
             show_notification(
                 title='Oferta encontrada no Telegram',
