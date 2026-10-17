@@ -497,6 +497,28 @@ def clear_history_action(icon, item):
         log(f"❌ Erro ao limpar histórico: {e}")
 
 
+def find_keywords(keywords, text_lower):
+    """Devolve {palavra-chave: palavra em que ela apareceu} para as que estão em text_lower.
+
+    A palavra-chave precisa começar no início de uma palavra do texto (pode continuar
+    depois, pra pegar plurais e derivados: "rato" acha "ratos" e "ratinho"). Antes era
+    só substring, e "rato" batia dentro de "barato", "contrato"..."""
+    found = {}
+    for kw in keywords:
+        match = re.search(r'(?<!\w)' + re.escape(kw) + r'\w*', text_lower)
+        if match:
+            found[kw] = match.group()
+    return found
+
+
+def describe_matches(matched_words):
+    """'rato' quando a palavra é exatamente a palavra-chave, 'rato ("ratinho")' quando não é."""
+    return ', '.join(
+        kw if word == kw else f'{kw} ("{word}")'
+        for kw, word in matched_words.items()
+    )
+
+
 async def process_message(chat, message):
     # Ignora a própria conversa de Mensagens Salvas (é lá que o bot posta os alertas)
     if ME_ID is not None and chat.id == ME_ID:
@@ -514,8 +536,10 @@ async def process_message(chat, message):
         update_last_processed(chat.id, message.id)
         return
 
-    matched_keywords = [kw for kw in KEYWORDS if kw in message_text_lower]
-    excluding_keywords = [kw for kw in EXCLUDE_KEYWORDS if kw in message_text_lower]
+    matched_words = find_keywords(KEYWORDS, message_text_lower)
+    matched_keywords = list(matched_words)
+    excluding_keywords = list(find_keywords(EXCLUDE_KEYWORDS, message_text_lower))
+    matched_label = describe_matches(matched_words)
 
     chat_title = getattr(chat, 'title', 'Canal Desconhecido')
 
@@ -546,7 +570,7 @@ async def process_message(chat, message):
 
         header = (
             f"🔔 **Alerta de Oferta Encontrada!**\n\n"
-            f"📌 **Termo(s) detectado(s):** {', '.join(matched_keywords)}\n"
+            f"📌 **Termo(s) detectado(s):** {matched_label}\n"
             + (f"💶 **Preço:** {price}\n" if price else "")
             + f"📢 **Canal:** {chat_title}\n"
             f"🕒 **Postado em:** {posted_at}\n"
@@ -560,7 +584,7 @@ async def process_message(chat, message):
 
         try:
             await send_alert(alert_msg, photo=photo, photo_bytes=photo_bytes)
-            log(f"🔥 [MATCH] Termo {matched_keywords} encontrado em '{chat_title}' (postado em {posted_at}). Alerta enviado para suas Mensagens Salvas!")
+            log(f"🔥 [MATCH] Termo(s) {matched_label} encontrado(s) em '{chat_title}' (postado em {posted_at}). Alerta enviado para suas Mensagens Salvas!")
             show_notification(
                 title='Oferta encontrada no Telegram',
                 message=f"{chat_title}: {message_text[:120]}{'...' if len(message_text) > 120 else ''}",
