@@ -12,6 +12,7 @@ Bot que fica escutando os canais do Telegram em que você está e avisa quando a
 - 🖼️ **Imagem do post no alerta** — quando a mensagem original tem foto, o alerta é enviado como legenda dessa foto (o preview de link do Telegram nem sempre mostra a imagem)
 - 💶 **Preço lido da imagem** — via OCR nativo do Windows (`winrt-Windows.Media.Ocr`, opcional), lê o preço do selo no canto inferior direito da arte e coloca no texto do alerta
 - 🛡️ **Proteção contra flood do Telegram** — espaça os envios e reage automaticamente se o limite for atingido
+- 📡 **Reconexão automática** — se a internet cair (ou o PC ligar sem rede), continua tentando sozinho (15 s, 30 s, 1 min, 2 min e depois a cada 5 min) e, ao voltar, busca as mensagens que chegaram enquanto estava fora
 - 📋 **Log persistente** e status ao vivo na bandeja do sistema (tooltip + menu com histórico)
 - 🖱️ **Roda em segundo plano** com um duplo-clique, sem janela de console
 

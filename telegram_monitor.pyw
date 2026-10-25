@@ -262,10 +262,19 @@ ME_ID = None
 SESSION_START = None
 ALERTS_SENT = 0
 LAST_ALERT_SUMMARY = None
+CONNECTED = False
+QUIT_EVENT = None  # asyncio.Event criado em main(); "Sair" na bandeja o aciona
+
+# Espera entre tentativas quando o Telegram fica inacessível (queda de rede, PC
+# acordando da suspensão...). Depois da última, continua tentando nesse intervalo.
+RECONNECT_DELAYS = (15, 30, 60, 120, 300)
 
 
 def update_tray_status():
     if not tray_icon:
+        return
+    if not CONNECTED:
+        tray_icon.title = "🟡 Sem conexão com o Telegram, tentando reconectar..."
         return
     lines = [f"🟢 Conectado desde {SESSION_START}", f"{ALERTS_SENT} alerta(s) nesta sessão"]
     if LAST_ALERT_SUMMARY:
@@ -284,6 +293,8 @@ def register_alert_sent(chat_title, matched_keywords):
 def quit_action(icon, item):
     icon.stop()
     if loop and not loop.is_closed():
+        if QUIT_EVENT is not None:
+            loop.call_soon_threadsafe(QUIT_EVENT.set)
         asyncio.run_coroutine_threadsafe(client.disconnect(), loop)
 
 
@@ -542,7 +553,25 @@ def describe_matches(matched_words):
     )
 
 
+_MESSAGES_IN_PROGRESS = set()
+
+
 async def process_message(chat, message):
+    # A mesma mensagem pode chegar ao mesmo tempo pela varredura de mensagens perdidas
+    # e pelo evento de mensagem nova (ex.: logo depois de reconectar). Entre conferir
+    # "já alertei?" e registrar o alerta há várias esperas (foto, preço, envio), então
+    # sem isso as duas cópias passavam e o alerta saía duplicado.
+    key = (chat.id, message.id)
+    if key in _MESSAGES_IN_PROGRESS:
+        return
+    _MESSAGES_IN_PROGRESS.add(key)
+    try:
+        await _process_message(chat, message)
+    finally:
+        _MESSAGES_IN_PROGRESS.discard(key)
+
+
+async def _process_message(chat, message):
     # Ignora a própria conversa de Mensagens Salvas (é lá que o bot posta os alertas)
     if ME_ID is not None and chat.id == ME_ID:
         return
@@ -662,6 +691,34 @@ async def handle_new_message(event):
     chat = event.chat if event.chat else await event.get_chat()
     await process_message(chat, event.message)
 
+async def connect_with_retry(connect):
+    """Chama connect() (client.start ou client.connect) até conseguir, esperando
+    RECONNECT_DELAYS entre as tentativas. O Telethon sozinho só tenta 5 vezes, com 1 s
+    entre elas, e depois desiste: uma queda de rede de ~10 s derrubava o monitor de vez.
+    Devolve False se o usuário mandou sair enquanto esperava."""
+    global CONNECTED, SESSION_START
+    attempt = 0
+    while not QUIT_EVENT.is_set():
+        try:
+            await connect()
+        except OSError as e:  # ConnectionError e TimeoutError são OSError
+            delay = RECONNECT_DELAYS[min(attempt, len(RECONNECT_DELAYS) - 1)]
+            attempt += 1
+            log(f"📡 Sem conexão com o Telegram ({e}). Tentativa {attempt} falhou, próxima em {delay}s.")
+            try:
+                await asyncio.wait_for(QUIT_EVENT.wait(), timeout=delay)
+            except TimeoutError:
+                pass
+            continue
+        if QUIT_EVENT.is_set():
+            return False
+        CONNECTED = True
+        SESSION_START = datetime.now().strftime('%H:%M')
+        update_tray_status()
+        return True
+    return False
+
+
 async def main():
     log("="*50)
     log("✨ MONITOR DE OFERTAS TELEGRAM INICIADO ✨")
@@ -674,8 +731,9 @@ async def main():
     log("="*50)
 
     # Inicia a sessão e pede autenticação no console (apenas na primeira execução)
-    global loop, tray_icon, ME_ID, SESSION_START
+    global loop, tray_icon, ME_ID, CONNECTED, QUIT_EVENT
     loop = asyncio.get_running_loop()
+    QUIT_EVENT = asyncio.Event()
     asyncio.create_task(watch_keyword_files())
 
     if TRAY_AVAILABLE:
@@ -692,21 +750,40 @@ async def main():
         )
         tray_icon.run_detached()
 
-    await client.start()
-    log("✅ Conectado com sucesso ao Telegram!")
-    me = await client.get_me()
-    ME_ID = me.id
-    SESSION_START = datetime.now().strftime('%H:%M')
-    update_tray_status()
-    await resume_missing_messages()
-    show_notification(
-        title='Telegram Ofertas Monitor',
-        message=f"Conectado e ouvindo. {channels_desc}.",
-    )
-    log("Listening... Pressione Ctrl+C para encerrar.\n")
     try:
-        await client.run_until_disconnected()
+        if not await connect_with_retry(lambda: client.start()):
+            return
+        log("✅ Conectado com sucesso ao Telegram!")
+        me = await client.get_me()
+        ME_ID = me.id
+        await resume_missing_messages()
+        show_notification(
+            title='Telegram Ofertas Monitor',
+            message=f"Conectado e ouvindo. {channels_desc}.",
+        )
+        log("Listening... Pressione Ctrl+C para encerrar.\n")
+
+        while True:
+            try:
+                await client.run_until_disconnected()
+                reason = 'a conexão foi encerrada'
+            except OSError as e:  # o Telethon desistiu de reconectar sozinho
+                reason = str(e) or e.__class__.__name__
+            if QUIT_EVENT.is_set():
+                break
+            CONNECTED = False
+            update_tray_status()
+            log(f"📡 Perdi a conexão com o Telegram ({reason}). Tentando reconectar...")
+            if not await connect_with_retry(client.connect):
+                break
+            log("✅ Reconectado ao Telegram. Buscando o que chegou enquanto estava fora...")
+            try:
+                await resume_missing_messages()
+            except OSError as e:
+                log(f"⚠️ A conexão caiu de novo durante a busca de mensagens perdidas: {e}")
     finally:
+        if client.is_connected():
+            await client.disconnect()
         if tray_icon:
             tray_icon.stop()
 
