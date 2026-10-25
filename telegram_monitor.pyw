@@ -77,6 +77,14 @@ def _set_windows_user_env_var(name, value):
         pass
 
 
+def _env_line(key, value):
+    """Linha KEY=valor do .env. Valores com aspas (palavra exata, '"mesa"') vão entre aspas
+    duplas e escapados, senão o python-dotenv não lê a linha se ela começar com aspas."""
+    if '"' in value or "'" in value or '\\' in value:
+        value = '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    return f'{key}={value}'
+
+
 def _prompt(msg, default=''):
     suffix = f" [{default}]" if default else ""
     value = input(f"{msg}{suffix}: ").strip()
@@ -119,7 +127,7 @@ def run_first_time_setup():
 
     if choice == '2':
         Path('.env').write_text(
-            "\n".join(f"{k}={v}" for k, v in values.items()) + "\n", encoding='utf-8'
+            "\n".join(_env_line(k, v) for k, v in values.items()) + "\n", encoding='utf-8'
         )
         print(f"✅ Configuração salva em {Path('.env').resolve()}")
     else:
@@ -130,7 +138,7 @@ def run_first_time_setup():
         except Exception as e:
             print(f"⚠️ Não foi possível salvar como variável de ambiente ({e}). Salvando em .env local.")
             Path('.env').write_text(
-                "\n".join(f"{k}={v}" for k, v in values.items()) + "\n", encoding='utf-8'
+                "\n".join(_env_line(k, v) for k, v in values.items()) + "\n", encoding='utf-8'
             )
 
     print("=" * 50 + "\n")
@@ -393,17 +401,17 @@ def _persist_keyword_vars(keywords_str, exclude_str):
         for line in lines:
             stripped = line.strip()
             if stripped.startswith('KEYWORDS='):
-                new_lines.append(f'KEYWORDS={keywords_str}')
+                new_lines.append(_env_line('KEYWORDS', keywords_str))
                 found['KEYWORDS'] = True
             elif stripped.startswith('EXCLUDE_KEYWORDS='):
-                new_lines.append(f'EXCLUDE_KEYWORDS={exclude_str}')
+                new_lines.append(_env_line('EXCLUDE_KEYWORDS', exclude_str))
                 found['EXCLUDE_KEYWORDS'] = True
             else:
                 new_lines.append(line)
         if not found['KEYWORDS']:
-            new_lines.append(f'KEYWORDS={keywords_str}')
+            new_lines.append(_env_line('KEYWORDS', keywords_str))
         if not found['EXCLUDE_KEYWORDS']:
-            new_lines.append(f'EXCLUDE_KEYWORDS={exclude_str}')
+            new_lines.append(_env_line('EXCLUDE_KEYWORDS', exclude_str))
         env_path.write_text('\n'.join(new_lines) + '\n', encoding='utf-8')
     else:
         _set_windows_user_env_var('KEYWORDS', keywords_str)
@@ -413,6 +421,10 @@ def _persist_keyword_vars(keywords_str, exclude_str):
 KEYWORDS_INCLUSIVE_FILE = Path('keywords_inclusivas.txt')
 KEYWORDS_EXCLUDE_FILE = Path('keywords_excludentes.txt')
 KEYWORD_FILE_CHECK_INTERVAL = 15  # segundos entre checagens de mudança nos arquivos
+KEYWORD_SYNTAX_HELP = (
+    '# A palavra vale no começo de uma palavra do texto: rato acha "ratos", mas não\n'
+    '# "barato". Entre aspas, só a palavra exata: "mesa" não acha "mesada" nem "mesas".'
+)
 
 
 def _read_keyword_file(path):
@@ -433,14 +445,16 @@ def _ensure_keyword_files():
         _write_keyword_file(
             KEYWORDS_INCLUSIVE_FILE,
             '# Palavras-chave INCLUSIVAS — uma por linha, qualquer uma dispara o alerta.\n'
-            '# Linhas começando com # são comentários e não contam como palavra-chave.',
+            '# Linhas começando com # são comentários e não contam como palavra-chave.\n'
+            + KEYWORD_SYNTAX_HELP,
             KEYWORDS,
         )
     if not KEYWORDS_EXCLUDE_FILE.exists():
         _write_keyword_file(
             KEYWORDS_EXCLUDE_FILE,
             '# Palavras-chave EXCLUDENTES — uma por linha, cancelam o alerta mesmo se\n'
-            '# uma inclusiva tiver batido. Linhas começando com # são ignoradas.',
+            '# uma inclusiva tiver batido. Linhas começando com # são ignoradas.\n'
+            + KEYWORD_SYNTAX_HELP,
             EXCLUDE_KEYWORDS,
         )
 
@@ -497,24 +511,33 @@ def clear_history_action(icon, item):
         log(f"❌ Erro ao limpar histórico: {e}")
 
 
-def find_keywords(keywords, text_lower):
-    """Devolve {palavra-chave: palavra em que ela apareceu} para as que estão em text_lower.
+def _keyword_regex(kw):
+    """Sem aspas, a palavra-chave precisa começar no início de uma palavra do texto e pode
+    continuar depois, pra pegar plurais e derivados ("rato" acha "ratos", mas não
+    "barato"). Entre aspas só vale a palavra exata ('"mesa"' não acha "mesada")."""
+    if len(kw) >= 2 and kw.startswith('"') and kw.endswith('"'):
+        exact = kw[1:-1].strip()
+        if not exact:
+            return None
+        return r'(?<!\w)' + re.escape(exact) + r'(?!\w)'
+    return r'(?<!\w)' + re.escape(kw) + r'\w*'
 
-    A palavra-chave precisa começar no início de uma palavra do texto (pode continuar
-    depois, pra pegar plurais e derivados: "rato" acha "ratos" e "ratinho"). Antes era
-    só substring, e "rato" batia dentro de "barato", "contrato"..."""
+
+def find_keywords(keywords, text_lower):
+    """Devolve {palavra-chave: palavra em que ela apareceu} para as que estão em text_lower."""
     found = {}
     for kw in keywords:
-        match = re.search(r'(?<!\w)' + re.escape(kw) + r'\w*', text_lower)
+        pattern = _keyword_regex(kw)
+        match = re.search(pattern, text_lower) if pattern else None
         if match:
             found[kw] = match.group()
     return found
 
 
 def describe_matches(matched_words):
-    """'rato' quando a palavra é exatamente a palavra-chave, 'rato ("ratinho")' quando não é."""
+    """'rato' quando a palavra é exatamente a palavra-chave, 'rato ("ratos")' quando não é."""
     return ', '.join(
-        kw if word == kw else f'{kw} ("{word}")'
+        kw if word == kw.strip('"').strip() else f'{kw} ("{word}")'
         for kw, word in matched_words.items()
     )
 
