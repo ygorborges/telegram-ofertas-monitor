@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from telethon import TelegramClient, events
@@ -665,8 +666,9 @@ async def scan_chat_for_missed_messages(chat):
         await process_message(chat, message)
 
 
-async def resume_missing_messages():
-    log('⏳ Verificando mensagens perdidas desde a última execução...')
+async def resume_missing_messages(quiet=False):
+    if not quiet:
+        log('⏳ Verificando mensagens perdidas desde a última execução...')
     if entity_list:
         for target in entity_list:
             try:
@@ -680,7 +682,8 @@ async def resume_missing_messages():
             if ME_ID is not None and dialog.entity.id == ME_ID:
                 continue
             await scan_chat_for_missed_messages(dialog.entity)
-    log('✅ Verificação de mensagens antigas concluída.')
+    if not quiet:
+        log('✅ Verificação de mensagens antigas concluída.')
 
 
 # Inicializa o cliente do Telethon (cria o arquivo monitor_session.session)
@@ -719,6 +722,55 @@ async def connect_with_retry(connect):
     return False
 
 
+WATCHDOG_INTERVAL = 60      # s entre verificações
+WATCHDOG_PING_TIMEOUT = 25  # s para o Telegram responder a um ping
+WATCHDOG_SWEEP_EVERY = 10   # a cada N verificações, varre mensagens perdidas em silêncio
+
+
+async def watchdog():
+    """Detecta conexão 'zumbi': o socket parece aberto mas o Telegram não entrega mais
+    nada (visto em 2026-11-05, depois de standby + salto de relógio: o monitor ficou
+    ~15 h mudo sem erro nenhum). A cada minuto faz um ping de verdade (get_me); se não
+    responde, ou se o PC acabou de voltar de suspensão (a pausa foi bem maior que o
+    intervalo), derruba a conexão para o laço do main() reconectar e recuperar o que
+    se perdeu. De tempos em tempos também varre mensagens perdidas em silêncio, pra
+    pegar o caso em que o ping funciona mas o fluxo de atualizações parou."""
+    cycles = 0
+    last = time.monotonic()
+    while not QUIT_EVENT.is_set():
+        try:
+            await asyncio.wait_for(QUIT_EVENT.wait(), timeout=WATCHDOG_INTERVAL)
+            return
+        except TimeoutError:
+            pass
+        now = time.monotonic()
+        gap, last = now - last, now
+        if not CONNECTED or not client.is_connected():
+            continue  # o laço do main() já está cuidando
+        reason = None
+        if gap > WATCHDOG_INTERVAL * 3:
+            reason = f'o computador ficou parado por ~{int(gap)} s (suspensão?)'
+        else:
+            try:
+                await asyncio.wait_for(client.get_me(), timeout=WATCHDOG_PING_TIMEOUT)
+            except Exception as e:
+                reason = f'o Telegram não respondeu ao ping ({e.__class__.__name__})'
+        if reason:
+            log(f'🐕 Watchdog: {reason}. Forçando reconexão.')
+            try:
+                await asyncio.wait_for(client.disconnect(), timeout=15)
+            except Exception as e:
+                log(f'⚠️ Watchdog: erro ao derrubar a conexão: {e}')
+            cycles = 0
+            continue
+        cycles += 1
+        if cycles % WATCHDOG_SWEEP_EVERY == 0:
+            try:
+                await resume_missing_messages(quiet=True)
+            except Exception as e:
+                log(f'⚠️ Watchdog: varredura periódica falhou: {e}')
+
+
 async def main():
     log("="*50)
     log("✨ MONITOR DE OFERTAS TELEGRAM INICIADO ✨")
@@ -735,6 +787,7 @@ async def main():
     loop = asyncio.get_running_loop()
     QUIT_EVENT = asyncio.Event()
     asyncio.create_task(watch_keyword_files())
+    asyncio.create_task(watchdog())
 
     if TRAY_AVAILABLE:
         tray_icon = Icon(
