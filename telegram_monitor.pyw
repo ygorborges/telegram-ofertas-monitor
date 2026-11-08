@@ -269,6 +269,9 @@ QUIT_EVENT = None  # asyncio.Event criado em main(); "Sair" na bandeja o aciona
 # Espera entre tentativas quando o Telegram fica inacessível (queda de rede, PC
 # acordando da suspensão...). Depois da última, continua tentando nesse intervalo.
 RECONNECT_DELAYS = (15, 30, 60, 120, 300)
+# connect() sem prazo ficou pendurado ao voltar de suspensão (2026-11-07): o monitor
+# parou de vez sem nenhum erro. Se passar disso, conta como falha e tenta de novo.
+CONNECT_TIMEOUT = 60
 
 
 def update_tray_status():
@@ -694,20 +697,25 @@ async def handle_new_message(event):
     chat = event.chat if event.chat else await event.get_chat()
     await process_message(chat, event.message)
 
-async def connect_with_retry(connect):
+async def connect_with_retry(connect, timeout=None):
     """Chama connect() (client.start ou client.connect) até conseguir, esperando
     RECONNECT_DELAYS entre as tentativas. O Telethon sozinho só tenta 5 vezes, com 1 s
     entre elas, e depois desiste: uma queda de rede de ~10 s derrubava o monitor de vez.
-    Devolve False se o usuário mandou sair enquanto esperava."""
+    timeout: prazo de cada tentativa (None = sem prazo; o login interativo da 1ª
+    execução precisa disso). Devolve False se o usuário mandou sair enquanto esperava."""
     global CONNECTED, SESSION_START
     attempt = 0
     while not QUIT_EVENT.is_set():
         try:
-            await connect()
+            await asyncio.wait_for(connect(), timeout=timeout)
         except OSError as e:  # ConnectionError e TimeoutError são OSError
+            try:  # um connect() cancelado pode deixar o cliente meio conectado
+                await asyncio.wait_for(client.disconnect(), timeout=15)
+            except Exception:
+                pass
             delay = RECONNECT_DELAYS[min(attempt, len(RECONNECT_DELAYS) - 1)]
             attempt += 1
-            log(f"📡 Sem conexão com o Telegram ({e}). Tentativa {attempt} falhou, próxima em {delay}s.")
+            log(f"📡 Sem conexão com o Telegram ({str(e) or e.__class__.__name__}). Tentativa {attempt} falhou, próxima em {delay}s.")
             try:
                 await asyncio.wait_for(QUIT_EVENT.wait(), timeout=delay)
             except TimeoutError:
@@ -804,7 +812,9 @@ async def main():
         tray_icon.run_detached()
 
     try:
-        if not await connect_with_retry(lambda: client.start()):
+        if not await connect_with_retry(
+                lambda: client.start(),
+                CONNECT_TIMEOUT if os.path.exists('monitor_session.session') else None):
             return
         log("✅ Conectado com sucesso ao Telegram!")
         me = await client.get_me()
@@ -827,7 +837,7 @@ async def main():
             CONNECTED = False
             update_tray_status()
             log(f"📡 Perdi a conexão com o Telegram ({reason}). Tentando reconectar...")
-            if not await connect_with_retry(client.connect):
+            if not await connect_with_retry(client.connect, CONNECT_TIMEOUT):
                 break
             log("✅ Reconectado ao Telegram. Buscando o que chegou enquanto estava fora...")
             try:
