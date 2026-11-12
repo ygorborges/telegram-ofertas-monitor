@@ -697,12 +697,43 @@ async def handle_new_message(event):
     chat = event.chat if event.chat else await event.get_chat()
     await process_message(chat, event.message)
 
-async def connect_with_retry(connect, timeout=None):
+def restart_self():
+    """Relança o monitor do zero e encerra este processo. Depois de uma queda, o
+    TelegramClient às vezes fica num estado em que connect() dá timeout para sempre,
+    mesmo com a rede de volta (2026-11-11: 144 tentativas em 14 h, sem nunca voltar).
+    Um processo novo, com cliente novo, resolve. As variáveis de palavras-chave/API são
+    relidas do registro (o watcher dos .txt grava lá), não herdadas deste processo."""
+    import subprocess
+    env = dict(os.environ)
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Environment') as key:
+            for name in ('TELEGRAM_API_ID', 'TELEGRAM_API_HASH', 'KEYWORDS', 'EXCLUDE_KEYWORDS', 'CHANNELS'):
+                try:
+                    env[name] = winreg.QueryValueEx(key, name)[0]
+                except OSError:
+                    pass
+    except Exception as e:
+        log(f'⚠️ Não consegui reler as variáveis do registro: {e}')
+    vbs = Path(__file__).resolve().parent / 'Iniciar Monitor.vbs'
+    log('🔁 Reconexão não funciona neste processo. Reiniciando o monitor...')
+    subprocess.Popen(['wscript.exe', str(vbs)], env=env, cwd=str(vbs.parent),
+                     creationflags=0x00000008 | 0x00000200)  # DETACHED_PROCESS | NEW_PROCESS_GROUP
+    if tray_icon:
+        try:
+            tray_icon.stop()
+        except Exception:
+            pass
+    os._exit(0)
+
+
+async def connect_with_retry(connect, timeout=None, restart_after=None):
     """Chama connect() (client.start ou client.connect) até conseguir, esperando
     RECONNECT_DELAYS entre as tentativas. O Telethon sozinho só tenta 5 vezes, com 1 s
     entre elas, e depois desiste: uma queda de rede de ~10 s derrubava o monitor de vez.
     timeout: prazo de cada tentativa (None = sem prazo; o login interativo da 1ª
-    execução precisa disso). Devolve False se o usuário mandou sair enquanto esperava."""
+    execução precisa disso). restart_after: depois de tantas falhas seguidas,
+    reinicia o processo (só no caminho de reconexão). Devolve False se o usuário mandou sair enquanto esperava."""
     global CONNECTED, SESSION_START
     attempt = 0
     while not QUIT_EVENT.is_set():
@@ -715,6 +746,9 @@ async def connect_with_retry(connect, timeout=None):
                 pass
             delay = RECONNECT_DELAYS[min(attempt, len(RECONNECT_DELAYS) - 1)]
             attempt += 1
+            if restart_after and attempt >= restart_after:
+                log(f"📡 Sem conexão com o Telegram ({str(e) or e.__class__.__name__}). {attempt} tentativas falharam.")
+                restart_self()
             log(f"📡 Sem conexão com o Telegram ({str(e) or e.__class__.__name__}). Tentativa {attempt} falhou, próxima em {delay}s.")
             try:
                 await asyncio.wait_for(QUIT_EVENT.wait(), timeout=delay)
@@ -837,7 +871,7 @@ async def main():
             CONNECTED = False
             update_tray_status()
             log(f"📡 Perdi a conexão com o Telegram ({reason}). Tentando reconectar...")
-            if not await connect_with_retry(client.connect, CONNECT_TIMEOUT):
+            if not await connect_with_retry(client.connect, CONNECT_TIMEOUT, restart_after=3):
                 break
             log("✅ Reconectado ao Telegram. Buscando o que chegou enquanto estava fora...")
             try:
